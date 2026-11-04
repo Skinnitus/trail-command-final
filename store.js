@@ -1,0 +1,16 @@
+'use strict';
+function createTrailStore(dbName='trail-command-studio-v2',legacyKey='trail_command_data_v1'){
+ let conn;function open(){return conn??=new Promise((resolve,reject)=>{const r=indexedDB.open(dbName,1);r.onupgradeneeded=()=>{r.result.createObjectStore('states');r.result.createObjectStore('regions',{keyPath:'id'})};r.onsuccess=()=>{r.result.onversionchange=()=>r.result.close();resolve(r.result)};r.onerror=()=>reject(r.error);r.onblocked=()=>reject(Error('Fermer les autres onglets pour ouvrir le stockage'))})}
+ async function get(key='current'){const db=await open();return new Promise((resolve,reject)=>{const r=db.transaction('states').objectStore('states').get(key);r.onsuccess=()=>resolve(r.result??null);r.onerror=()=>reject(r.error)})}
+ async function load(){const current=await get();if(current!==null)return{data:Trail.normalize(current),migrated:false};const old=localStorage.getItem(legacyKey);if(old!==null)return{data:await write(Trail.normalize(JSON.parse(old)),0),migrated:true};return{data:Trail.fresh(),migrated:false}}
+ async function write(input,revision=0,restore=false,force=false){Trail.validate(input);const data=Trail.copy(input);data.revision=revision+1;data.updated=new Date().toISOString();if(JSON.stringify(data).length>100e6)throw Error('Données supérieures à 100 Mo ; exporter puis réduire les photos');const db=await open();return new Promise((resolve,reject)=>{const tx=db.transaction('states','readwrite'),s=tx.objectStore('states');let reason;const r=s.get('current');r.onsuccess=()=>{const old=r.result;if(!force&&(old?.revision??0)!==revision){reason=Error('Écriture concurrente : recharger avant de réessayer');tx.abort();return}if(old!==undefined){s.put(old,'previous');if(restore)s.put(old,'before-restore')}s.put(data,'current')};tx.oncomplete=()=>resolve(data);tx.onabort=()=>reject(reason||tx.error||Error('Écriture annulée, données précédentes conservées'));tx.onerror=()=>{reason=tx.error}})}
+ async function regions(){const db=await open();return new Promise((resolve,reject)=>{const r=db.transaction('regions').objectStore('regions').getAll();r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
+ async function region(id){const db=await open();return new Promise((resolve,reject)=>{const r=db.transaction('regions').objectStore('regions').get(id);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
+ async function regionWrite(region){const db=await open();return new Promise((resolve,reject)=>{const tx=db.transaction('regions','readwrite');tx.objectStore('regions').put(region);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||Error('Zone non enregistrée'))})}
+ async function regionRemove(id){const db=await open();return new Promise((resolve,reject)=>{const tx=db.transaction('regions','readwrite');tx.objectStore('regions').delete(id);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)})}
+ async function raw(){return{format:'trail-command-recovery',legacy:localStorage.getItem(legacyKey),current:await get(),previous:await get('previous'),beforeRestore:await get('before-restore')}}
+ return{open,get,load,write,regions,region,regionWrite,regionRemove,raw,dbName,legacyKey};
+}
+const TrailStore=createTrailStore();
+
+Object.defineProperty(globalThis,"TrailStorage",{value:TrailStore});
